@@ -33,7 +33,7 @@ if windll is not None:
 
 
 def is_a_tty(stream):
-    return hasattr(stream, 'isatty') and stream.isatty()
+    return hasattr(stream, 'isatty') and not stream.closed and stream.isatty()
 
 
 def is_open(stream):

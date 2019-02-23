@@ -24,7 +24,7 @@ from __future__ import absolute_import
 from builtins import range
 from PyQt5.QtCore import QPoint, QPointF, QTimer, pyqtSignal, Qt, QRectF
 from PyQt5.QtGui import QCursor, QPainter, QImage
-from PyQt5.QtWidgets import QGraphicsView, QVBoxLayout, QApplication, QMessageBox
+from PyQt5.QtWidgets import QGraphicsView, QVBoxLayout, QApplication, QMessageBox, QPushButton
 
 import numpy
 import os
@@ -70,6 +70,7 @@ class ImageView2D(QGraphicsView):
     @property
     def hud(self):
         return self._hud
+
     @hud.setter
     def hud(self, hud):
         """
@@ -79,8 +80,9 @@ class ImageView2D(QGraphicsView):
         """
         self._hud = hud
         self.setLayout(QVBoxLayout())
-        self.layout().setContentsMargins(0,0,0,0)
+        #self.layout().setContentsMargins(0,0,0,0)
         self.layout().addWidget(self._hud)
+        self.layout().addWidget(QPushButton("Hello"))
         self.layout().addStretch()
 
         scene = self.scene()
@@ -104,8 +106,7 @@ class ImageView2D(QGraphicsView):
 
         # We can't use OpenGL because the HUD doesn't render properly on top.
         # Maybe this will be fixed in Qt5?
-        if False:
-            self.setViewport(QGLWidget())
+        self.setViewport(QGLWidget())
         
         self.setScene(imagescene2d)
         self.mousePos = QPointF(0,0)
@@ -140,11 +141,12 @@ class ImageView2D(QGraphicsView):
         #self.viewport().setAttribute(Qt.WA_PaintOnScreen)
         #self.viewport().setAutoFillBackground(False)
 
-        self.setViewportUpdateMode(QGraphicsView.MinimalViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         #as rescaling images is slow if done in software,
         #we use Qt's built-in background caching mode so that the cached
         #image need only be blitted on the screen when we only move
         #the cursor
+
         self.setCacheMode(QGraphicsView.CacheBackground)
         self.setRenderHint(QPainter.Antialiasing, False)
 
@@ -312,6 +314,10 @@ class ImageView2D(QGraphicsView):
     def toggleHud(self):
         if self._hud is not None:
             self._hud.setVisible(not self._hud.isVisible())
+
+        print('Doubly update')
+        self.viewport().update()
+        self.update()
 
     def setHudVisible(self, visible):
         if self._hud is not None:

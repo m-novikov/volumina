@@ -26,10 +26,10 @@ from functools import partial
 
 #PyQt
 from PyQt5.QtCore import pyqtSignal, Qt, QPointF, QSize
-from PyQt5.QtGui import QPen, QPainter, QPixmap, QColor, QFont, QPainterPath, QBrush, QTransform, QIcon
+from PyQt5.QtGui import QPen, QPainter, QPixmap, QColor, QFont, QPainterPath, QBrush, QTransform, QIcon, QPaintEvent
 
 from PyQt5.QtWidgets import QLabel, QHBoxLayout, QVBoxLayout, QAbstractSpinBox, QCheckBox, QWidget, \
-                            QFrame, QProgressBar, QSizePolicy, QSlider, QToolButton
+                            QFrame, QProgressBar, QSizePolicy, QSlider, QToolButton, QPushButton, QStylePainter, QStyle, QStyleOptionButton
 
 
 
@@ -54,6 +54,136 @@ def _load_icon(filename, backgroundColor, width, height):
                            Qt.KeepAspectRatio,
                            Qt.SmoothTransformation)
     return pixmap
+
+
+def rotate_button_icon(btn: QPushButton, rotation: int):
+    sizes = btn.icon().availableSizes()
+    if not sizes:
+        return
+
+    pixmap = btn.icon().pixmap(sizes[0])
+    transform = QTransform().rotate(rotation * 90)
+    rotated = pixmap.transformed(transform)
+    btn.setIcon(QIcon(rotated))
+
+
+class HUDButton(QPushButton):
+    pass
+
+
+class AxisButton(HUDButton):
+    def rotate(self, rotation):
+        sizes = self.icon().availableSizes()
+        if not sizes:
+            return
+
+        pixmap = self.icon().pixmap(sizes[0])
+        transform = QTransform().rotate(rotation * 90)
+        rotated = pixmap.transformed(transform)
+        self.setIcon(QIcon(rotated))
+
+    def swapAxes(self):
+        pass
+
+
+class IconRotator:
+    def __init__(self, btn: QPushButton):
+        self._btn = btn
+        self._rotation = 0
+        self._swapped = False
+
+    def rotate(self, rotation):
+        sizes = self.icon().availableSizes()
+        if not sizes:
+            return
+
+        pixmap = self.icon().pixmap(sizes[0])
+        transform = QTransform().rotate(rotation * 90)
+        rotated = pixmap.transformed(transform)
+        self.setIcon(QIcon(rotated))
+
+
+def dict_to_style_string(dct: dict):
+    style = ''
+
+    for prop, value in dct.items():
+        style += f"{prop}: {value}; "
+
+    return style
+
+
+class HUDButtonBuilder:
+    ICONS = {
+        'export': (':icons/icons/export.png', "Export Current Composite View"),
+        'undock': (':icons/icons/undock.png', "Undock"),
+        'dock': (':icons/icons/dock.png', "Dock"),
+        'zoom-to-fit': (':icons/icons/spin-up.png', "Zoom to fit"),
+        'reset-zoom': (':icons/icons/spin-down.png', "Reset zoom"),
+        'maximize': (':icons/icons/maximize.png', "Maximize"),
+        'minimize': (':icons/icons/minimize.png', "Minimize"),
+        'spin-up': (':icons/icons/spin-up.png', "+ 1"),
+        'spin-down': (':icons/icons/spin-down.png', "- 1"),
+        'rotate-left': (':icons/icons/rotate-left.png', "Rotate left"),
+        'rotate-right': (':icons/icons/rotate-right.png', "Rotate right"),
+        'swap-axes': (':icons/icons/swap-axes.png', "Swap axes"),
+        'swap-axes-swapped': (':icons/icons/swap-axes-swapped.png', "Swap axes"),
+    }
+
+    def __init__(self) -> None:
+        self._style = {
+            'border-style': 'ridge',
+            'border-color': 'rgb(195, 195, 195)',
+            'border-radius': '0px',
+            'border-width': '4px',
+        }
+        self._icon = None
+        self._tooltip = None
+        self._width = None
+        self._height = None
+
+    def backgroundColor(self, color: QColor) -> 'HUDButtonBuilder':
+        self._style['background-color'] = color.name()
+        return self
+
+    def foregroundColor(self, color: QColor) -> 'HUDButtonBuilder':
+        self._style['color'] = color.name()
+        return self
+
+    def flavour(self, flavour: str) -> 'HUDButtonBuilder':
+        if flavour not in self.ICONS:
+            raise ValueError('Unknown button flavour')
+
+        icon_path, self._tooltip = self.ICONS[flavour]
+
+        self._icon = QIcon(QPixmap(icon_path))
+        return self
+
+    def width(self, width: int) -> 'HUDButtonBuilder':
+        self._width = width
+        return self
+
+    def height(self, height: int) -> 'HUDButtonBuilder':
+        self._height = height
+        return self
+
+    def build(self):
+        btn = HUDButton()
+        btn.setFlat(True)
+        btn.setIcon(self._icon)
+        btn.setIconSize(QSize(self._width, self._height))
+        btn.setToolTip(self._tooltip)
+        style_str = dict_to_style_string({
+            **self._style,
+            'width': self._width,
+            'height': self._height,
+        })
+        btn.setStyleSheet(
+            f"QPushButton {{ {style_str} }}"
+            "QPushButton:pressed { border-style: groove }"
+        )
+        return btn
+
+
 
 # TODO: replace with QPushButton. in __init__(), read icon and give
 # correct background color.
@@ -149,7 +279,7 @@ class SpinBoxImageView(QHBoxLayout):
 
         self.labelLayout = QVBoxLayout()
         self.upLabel = LabelButtons('spin-up', parentView,
-                                    backgroundColor, foregroundColor,
+                                    QColor('green'), foregroundColor,
                                     old_div(height,2), old_div(height,2))
         self.labelLayout.addWidget(self.upLabel)
         self.upLabel.clicked.connect(self.on_upLabel)
@@ -167,7 +297,7 @@ class SpinBoxImageView(QHBoxLayout):
         self.spinBox.delayedValueChanged.connect(self.spinBoxValueChanged)
         self.addWidget(self.spinBox)
         self.spinBox.setToolTip("Spinbox")
-        self.spinBox.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        #self.spinBox.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.spinBox.setAlignment(Qt.AlignRight)
         self.spinBox.setMaximum(value)
         self.spinBox.setMaximumHeight(height)
@@ -283,6 +413,7 @@ class ImageView2DHud(QWidget):
 
     def createImageView2DHud(self, axis, value, backgroundColor,
                              foregroundColor):
+        print('Called createImageView2DHud with following arguments', axis, value, backgroundColor, foregroundColor)
         self.axis = axis
         self.backgroundColor = backgroundColor
         self.foregroundColor = foregroundColor
@@ -312,13 +443,27 @@ class ImageView2DHud(QWidget):
         leftHudLayout.addLayout(self.sliceSelector)
 
         leftHudFrame = QFrame()
+        leftHudFrame.setAttribute(Qt.WA_NoSystemBackground)
+        leftHudFrame.setStyleSheet("border-image: none")
         leftHudFrame.setLayout( leftHudLayout )
-        setupFrameStyle( leftHudFrame )
+        #setupFrameStyle( leftHudFrame )
+        leftHudFrame.setLineWidth(3)
         self.leftHudFrame = leftHudFrame
 
         self.layout.addWidget( leftHudFrame )
+        btn = (
+            HUDButtonBuilder()
+                .height(20)
+                .width(20)
+                .flavour('rotate-left')
+                .foregroundColor(foregroundColor)
+                .backgroundColor(backgroundColor)
+                .build()
+        )
 
-        self.layout.addSpacing(12)
+        self.layout.addWidget(btn)
+
+        #self.layout.addSpacing(12)
 
         for name, handler in [('rotate-left', self.on_rotLeftButton),
                               ('swap-axes', self.on_swapAxesButton),
@@ -410,6 +555,7 @@ class ImageView2DHud(QWidget):
         return pixmap
 
     def setAxes(self, rotation, swapped):
+        return
         self.buttons["swap-axes"].rotation = rotation
         self.buttons["swap-axes"].swapped = swapped
 
