@@ -127,7 +127,7 @@ class VolumeEditor( QObject ):
             self.navCtrl.indicateSliceIntersection = False
         else:
             for i in range(3):
-                self.parent.volumeEditorWidget.quadview.ensureMinimized(i)
+                self.parent.viewer.quadview.ensureMinimized(i)
 
         self.shapeChanged.emit()
 
@@ -160,6 +160,7 @@ class VolumeEditor( QObject ):
         self.imageScenes = [ImageScene2D(self.posModel, (0,1,4), swapped_default=True),
                             ImageScene2D(self.posModel, (0,2,4)),
                             ImageScene2D(self.posModel, (0,3,4))]
+
         self.imageViews = [ImageView2D(parent, self.cropModel, self.imageScenes[i]) for i in [0,1,2]]
         self.imageViews[0].focusChanged.connect(lambda arg=0 : self.lastImageViewFocus(arg))
         self.imageViews[1].focusChanged.connect(lambda arg=1 : self.lastImageViewFocus(arg))
