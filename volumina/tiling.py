@@ -357,6 +357,7 @@ class _TilesCache( object ):
                       "_TilesCache._layerCache should be a dict-of-dict-of-dict for faster lookup!")
         qgraphicsitems = []
         for (layer_id, t_id), img in self._layerCache.caches[stack_id].items():
+            print("tile_id", t_id)
             if t_id == tile_id and isinstance(img, QGraphicsItem):
                 qgraphicsitems.append(img)
         return qgraphicsitems
@@ -725,6 +726,7 @@ class TileProvider( QObject ):
                 assert isinstance(patch, QImage), \
                     "Unknown tile layer type: {}. Expected QImage or QGraphicsItem".format(type(patch))
                 if qimg is None:
+                    print('newqimg', type(self.tiling.imageRects[tile_nr]), type(patch))
                     qimg = QImage(self.tiling.imageRects[tile_nr].size(), QImage.Format_ARGB32_Premultiplied)
                     qimg.fill(0xffffffff) # Use a hex constant instead.
                     p = QPainter(qimg)

@@ -494,6 +494,10 @@ class ImageView2DHud(QWidget):
         self.dockButton = self.buttons['undock']
         self.maxButton = self.buttons['maximize']
 
+    def resize(self, *args, **kwargs):
+        print(args, kwargs)
+        return super().resize(*args, **kwargs)
+
     def set3DButtonsVisible(self, visible):
         self.leftHudFrame.setVisible( visible )
         self.dockButton.setVisible( visible )

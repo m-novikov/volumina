@@ -23,8 +23,8 @@ from __future__ import division
 from __future__ import absolute_import
 from builtins import range
 from PyQt5.QtCore import QPoint, QPointF, QTimer, pyqtSignal, Qt, QRectF
-from PyQt5.QtGui import QCursor, QPainter, QImage
-from PyQt5.QtWidgets import QGraphicsView, QVBoxLayout, QApplication, QMessageBox, QPushButton
+from PyQt5.QtGui import QCursor, QPainter, QImage, QSurfaceFormat
+from PyQt5.QtWidgets import QGraphicsView, QVBoxLayout, QApplication, QMessageBox, QPushButton, QOpenGLWidget
 
 import numpy
 import os
@@ -86,12 +86,16 @@ class ImageView2D(QGraphicsView):
         self.layout().addStretch()
 
         scene = self.scene()
+        #scene.addWidget(QPushButton("Hello"))
+        #scene.addWidget(self._hud)
+        
         hud.zoomToFitButtonClicked.connect(self.fitImage)
         hud.resetZoomButtonClicked.connect(self.doScaleTo)
         hud.rotLeftButtonClicked.connect(scene._onRotateLeft)
         hud.rotRightButtonClicked.connect(scene._onRotateRight)
         hud.swapAxesButtonClicked.connect(scene._onSwapAxes)
         hud.exportButtonClicked.connect(self.exportImages)
+        #self.resized.connect(hud.resize)
 
         scene.axesChanged.connect(hud.setAxes)
 
@@ -106,7 +110,9 @@ class ImageView2D(QGraphicsView):
 
         # We can't use OpenGL because the HUD doesn't render properly on top.
         # Maybe this will be fixed in Qt5?
-        self.setViewport(QGLWidget())
+        w = QOpenGLWidget()
+        print('upatebeh', w.updateBehavior())
+        #self.setViewport(w)
         
         self.setScene(imagescene2d)
         self.mousePos = QPointF(0,0)
@@ -140,12 +146,17 @@ class ImageView2D(QGraphicsView):
         #self.viewport().setAttribute(Qt.WA_NoSystemBackground)
         #self.viewport().setAttribute(Qt.WA_PaintOnScreen)
         #self.viewport().setAutoFillBackground(False)
+        f = QSurfaceFormat.defaultFormat()
+        print(f.swapBehavior(), f.swapInterval())
 
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        #self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         #as rescaling images is slow if done in software,
         #we use Qt's built-in background caching mode so that the cached
         #image need only be blitted on the screen when we only move
         #the cursor
+        # f = QSurfaceFormat()
+        # f.setSwapBehavior(QSurfaceFormat.DoubleBuffer)
+        # QSurfaceFormat.setDefaultFormat(f)
 
         self.setCacheMode(QGraphicsView.CacheBackground)
         self.setRenderHint(QPainter.Antialiasing, False)
@@ -327,7 +338,7 @@ class ImageView2D(QGraphicsView):
         return self._hud.isVisible()
 
     def focusInEvent(self, event):
-        self.setStyleSheet(".QFrame {border: 2px solid white; border-radius: 4px;}")
+        #self.setStyleSheet(".QFrame {border: 2px solid white; border-radius: 4px;}")
         self.focusChanged.emit()
 
     def focusOutEvent(self, event):
