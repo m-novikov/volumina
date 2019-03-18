@@ -188,6 +188,23 @@ class ImageView2D(QGraphicsView):
 #         super( ImageView2D, self ).paintEvent(event)
 #         print "painting took {} ms".format( int((time.time() - start)*1000) )
 
+    def mousePressEvent(self, event):
+        """
+        By default, our base class (QGraphicsScene) only sends mouse press events to the top-most item under the mouse.
+        When labeling edges, we want the edge label layer to accept mouse events, even if it isn't on top.
+        Therefore, we send events to all items under the mouse, until the event is accepted.
+        """
+        super().mousePressEvent(event)
+        if not event.isAccepted():
+            print("Sending down", event.source())
+            items = self.items(event.pos())
+            for item in items:
+                print("Sending to item", item)
+                event.viewer = self
+                item.mousePressEvent(event)
+                if event.isAccepted():
+                    print("stop")
+                    #break
 
     def showCropLines(self, visible):
         self._croppingMarkers.setVisible(visible)

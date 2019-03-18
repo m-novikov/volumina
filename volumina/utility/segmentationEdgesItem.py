@@ -8,7 +8,7 @@ import numpy as np
 from PyQt5.Qt import pyqtSignal
 from PyQt5.QtCore import Qt, QObject, QRectF, QPointF, QPoint
 from PyQt5.QtWidgets import QApplication, QGraphicsObject, QGraphicsPathItem
-from PyQt5.QtGui import QPainterPath, QPen, QColor
+from PyQt5.QtGui import QPainterPath, QPen, QColor, QPainterPathStroker
 
 from volumina.utility import SignalingDict, edge_coords_nd, simplify_line_segments
 
@@ -50,11 +50,15 @@ class SegmentationEdgesItem( QGraphicsObject ):
         self.set_path_items(path_items)
         self.default_pen = default_pen
         self.is_clickable = is_clickable
+        self.bbox = QRectF()
 
     def set_path_items(self, path_items):
+        print("setPathITems", len(path_items))
+        self.bbox = QRectF()
         self.path_items = path_items
         for path_item in list(path_items.values()):
             path_item.set_parent(self)
+            self.bbox |= path_item.boundingRect()
 
         # Cache the path item keys as a set
         self.path_ids = set(path_items.keys())
@@ -63,7 +67,11 @@ class SegmentationEdgesItem( QGraphicsObject ):
         # Return an empty rect to indicate 'no content'.
         # This 'item' is merely a parent node for child items.
         # (See QGraphicsObject.ItemHasNoContents.)
-        return QRectF()
+        return self.bbox
+
+    def mousePressEvent(self, ev):
+        print("!!!!!!!!!!!!!!!1clikc", ev)
+        super().mousePressEvent(ev)
 
     def handle_edge_clicked(self, id_pair, event):
         self.edgeClicked.emit( id_pair, event )
@@ -205,6 +213,14 @@ def painter_path_from_edge_coords( horizontal_edge_coords, vertical_edge_coords,
     path = arrayToQPath( line_segments[:,0], line_segments[:,1], connect='pairs' )
     return path
 
+from random import randint
+from collections import defaultdict
+
+def randomcolor():
+    return QColor(randint(0, 255), randint(0, 255), randint(0, 255))
+
+outline_colors = defaultdict(randomcolor)
+
 class SingleEdgeItem( QGraphicsPathItem ):
     """
     Represents a single edge between two superpixels.
@@ -216,17 +232,96 @@ class SingleEdgeItem( QGraphicsPathItem ):
         self.parent = None # Should be initialized with set_parent()
         self.id_pair = id_pair
 
-        if not initial_pen:
+        if True or not initial_pen:
             initial_pen = QPen()
-            initial_pen.setCosmetic(True)
+            #initial_pen.setCosmetic(True)
             initial_pen.setCapStyle(Qt.RoundCap)
             initial_pen.setColor(Qt.white)
-            initial_pen.setWidth(3)
+            initial_pen.setWidth(5)
 
         self.setPen(initial_pen)
         self.setPath(painter_path)
-        
+        self.setFlag(QGraphicsPathItem.ItemClipsToShape, True)
+        self.setAcceptHoverEvents(True)
+        self._showPaint = False
+        self._scale = 1
+        self._hover = False
+        self._pen = self.pen()
+        self._selection_pen = QPen(self._pen)
+        self._selection_pen.setStyle(Qt.DashLine)
+        self._selection_pen.setColor(Qt.blue)
+
+    def hoverEnterEvent(self, ev):
+        self.setCursor(Qt.PointingHandCursor)
+        self.setPen(self._selection_pen)
+        return super().hoverEnterEvent(ev)
+
+    def hoverLeaveEvent(self, ev):
+        self.setPen(self._pen)
+        return super().hoverEnterEvent(ev)
+
+    def paint(self, painter, option, widget=None):
+        self._scale = painter.transform().inverted()[0].m11()
+        if self._hover:
+            initial_pen = QPen()
+            initial_pen.setCosmetic(True)
+            initial_pen.setCapStyle(Qt.RoundCap)
+            initial_pen.setColor(Qt.blue)
+            initial_pen.setWidth(1)
+            painter.strokePath(self.path(), initial_pen)
+
+        if self._showPaint:
+            #print("inv", inv)
+            print("self transform inver", painter.transform().m11(), self._scale)
+            #print("self transform m22", self.transform().m22())
+            color = outline_colors[self.id_pair]
+            #color = QColor(self.id_pair[0] / 255, self.id_pair[1] / 255, 0)
+            #print("Color", color)
+            initial_pen = QPen()
+            initial_pen.setCosmetic(True)
+            initial_pen.setCapStyle(Qt.RoundCap)
+            initial_pen.setColor(color)
+            initial_pen.setWidth(1)
+            painter.strokePath(self.shape(), initial_pen)
+            print("paint called on", self.id_pair)
+        super().paint(painter, option, widget)
+
+    def shape(self):
+        p = QPen(self.pen())
+        #if self._scale < 1:
+        #self._scale = 1
+
+        if self._showPaint:
+            print("scaling to", 5 * self._scale)
+        p.setWidth(max(0.5, 10 * self._scale))
+        p.setCosmetic(True)
+        st = QPainterPathStroker(p)
+        st.setWidth(max(0.5, 10 * self._scale))
+        if self._showPaint:
+            pass
+            # print("m11", self.path().transform().m11())
+            # print("m12", self.path().transform().m11())
+        stroke = st.createStroke(self.path())
+        return stroke
     def mousePressEvent(self, event):
+        print("event for", self.id_pair, event, self.scale(), self.path().elementAt(0))
+        self._showPaint = True
+        #pth = self.mapToScene(self.path())
+        print("Scene shape contains?", self.shape().contains(event.scenePos()), self.pen().width())
+        print("contains0", self.contains(event.pos()))
+        def dist(a, b):
+            return ((a.x() - b.x()) ** 2 + (a.y() - b.y()) ** 2) ** 0.5
+        for p in range(0, 100, 20):
+            s = self.mapToScene(self.shape()).pointAtPercent(p / 100)
+            print(s, dist(event.scenePos(), s))
+        print("contains1", self.contains(event.scenePos()))
+        shp = self.shape()
+        print("My Color:", self.pen().color().alpha())
+        if not self.shape().contains(event.pos()):
+            print("should ignore", self.id_pair)
+            #event.ignore()
+            #return
+        print("CLicked on", event.pos(), self.shape(), shp.contains(event.pos()))
         self.parent.handle_edge_clicked( self.id_pair, event )
 
     def mouseMoveEvent(self, event):
