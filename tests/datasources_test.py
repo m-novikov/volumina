@@ -19,12 +19,15 @@
 # This information is also available on the ilastik web site at:
 # 		   http://ilastik.org/license/
 ###############################################################################
-from builtins import object
+import pytest
+
 import unittest as ut
 import os
 from abc import ABCMeta, abstractmethod
+from numpy.testing import assert_array_almost_equal
+from unittest import mock
 import volumina._testing
-from volumina.pixelpipeline.datasources import ArraySource, RelabelingArraySource
+from volumina.pixelpipeline.datasources import ArraySource, RelabelingArraySource, RequestABC
 import numpy as np
 from volumina.slicingtools import sl, slicing2shape
 from future.utils import with_metaclass
@@ -125,5 +128,80 @@ class RelabelingArraySourceTest(ut.TestCase, GenericArraySourceTest):
         del self.slicing
 
 
-if __name__ == "__main__":
-    ut.main()
+class CachedSource:
+    """
+    Decorator data source provides cachable requests to underlying src
+    """
+    def __init__(self, orig):
+        self._orig = orig
+        self._cache = {}
+
+    def dtype(self):
+        return self._orig.dtype()
+
+    def request(self, slicing):
+        if slicing not in self._cache:
+            self._cache[slicing] = self._orig.request(slicing)
+        return self._cache[slicing]
+
+
+class TestCachedImageSource:
+    @pytest.fixture
+    def data(self):
+        data = np.array(range(512 * 512))
+        data.shape = (1, 1, 1, 512, 512)
+        return data
+
+    @pytest.fixture
+    def orig_src(self, data):
+        src = ArraySource(data)
+        mocked = ut.mock.Mock(wraps=src)
+        return mocked
+
+    @pytest.fixture
+    def src(self, orig_src):
+        return CachedSource(orig_src)
+
+    def test_request_slicing(self, src, orig_src):
+        slicing = sl[:, :, :, :, :]
+        src.request(slicing)
+        orig_src.request.assert_called_once_with(slicing)
+
+    def test_consecutive_requests_with_same_shape_are_cached(self, src, orig_src, data):
+        slicing = sl[:100, :100, :100, :100, :100]
+        expected_res = data[0:1, 0:1, 0:1, 0:100, 0:100]
+
+        assert_array_almost_equal(src.request(slicing).wait(), expected_res)
+        assert_array_almost_equal(src.request(slicing).wait(), expected_res)
+
+        orig_src.request.assert_called_once_with(slicing)
+
+    def test_request_of_subslicing(self, src, orig_src, data):
+        slicing = sl[:100, :100, :100, :100, :100]
+        smaller_slicing = sl[:1, :1, :1, :50, :50]
+
+        expected_res = data[0:1, 0:1, 0:1, 0:100, 0:100]
+        expected_res_smaller = data[0:1, 0:1, 0:1, 0:50, 0:50]
+
+        assert_array_almost_equal(src.request(slicing).wait(), expected_res)
+        assert_array_almost_equal(src.request(smaller_slicing).wait(), expected_res_smaller)
+
+        orig_src.request.assert_called_once_with(slicing)
+
+    def test_has_the_same_dtype_as_original(self, orig_src, src):
+        assert orig_src.dtype() == src.dtype()
+
+    @pytest.mark.parametrize('slice1,slice2,result', [
+        [sl[0:100, 0:100], sl[0:40, 0:40], True],
+        [sl[0:40, 0:40], sl[0:100, 0:100], False],
+        [sl[1:40, 1:40], sl[0:40, 0:40], False],
+        [sl[1:40, 1:40], sl[1:39, 1:40], True],
+    ])
+    def test_covers(self, slice1, slice2, result):
+        def covers(slicing, other):
+            assert len(slicing) == len(other)
+            for slice_, other_slice in zip(slicing, other):
+                if slice_.stop < other_slice.stop or slice_.start > other_slice.start:
+                    return False
+            return True
+        assert covers(slice1, slice2) == result
