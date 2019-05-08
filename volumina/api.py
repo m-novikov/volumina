@@ -25,6 +25,7 @@
 from __future__ import absolute_import
 from .pixelpipeline.imagepump import ImagePump
 from volumina.pixelpipeline.datasources import *
+from volumina.pixelpipeline.datasourcefactories import createDataSource
 from volumina.layer import *
 from volumina.layerstack import LayerStackModel
 from volumina.widgets.layerwidget import LayerWidget

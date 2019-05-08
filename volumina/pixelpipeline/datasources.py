@@ -81,6 +81,7 @@ assert issubclass(ArrayRequest, RequestABC)
 # *******************************************************************************
 
 
+
 class ArraySource(QObject):
     isDirty = pyqtSignal(object)
     numberOfChannelsChanged = pyqtSignal(int)  # Never emitted
@@ -274,7 +275,7 @@ if _has_lazyflow:
         """
         wref()._setDirtyLF(*args, **kwargs)
 
-    class LazyflowSource(QObject):
+    class _LazyflowSource(QObject):
         isDirty = pyqtSignal(object)
         numberOfChannelsChanged = pyqtSignal(int)
 
@@ -283,7 +284,7 @@ if _has_lazyflow:
             return self._orig_outslot
 
         def __init__(self, outslot, priority=0):
-            super(LazyflowSource, self).__init__()
+            super().__init__()
 
             assert _has_lazyflow, "Can't instantiate a LazyflowSource: Wasn't able to import lazyflow."
 
@@ -369,13 +370,14 @@ if _has_lazyflow:
         def __hash__(self):
             return hash((self._orig_meta, self._orig_outslot))
 
-    assert issubclass(LazyflowSource, SourceABC)
+    assert issubclass(_LazyflowSource, SourceABC)
 
-    class LazyflowSinkSource(LazyflowSource):
+
+    class LazyflowSinkSource(_LazyflowSource):
         def __init__(self, outslot, inslot, priority=0):
             self._inputSlot = inslot
             self._priority = priority
-            LazyflowSource.__init__(self, outslot)
+            _LazyflowSource.__init__(self, outslot)
 
         def put(self, slicing, array):
             assert _has_vigra, "Lazyflow SinkSource requires lazyflow and vigra."
@@ -693,3 +695,119 @@ class HaloAdjustedDataSource(QObject):
             slice(s.start + halo_start, s.stop + halo_stop)
             for (s, halo_start, halo_stop) in zip(slicing, self.halo_start_delta, self.halo_stop_delta)
         )
+
+
+def covers(slicing, other):
+    assert len(slicing) == len(other)
+
+    for slice_, other_slice in zip(slicing, other):
+        start_covered = (
+            slice_.start is None
+            or (other_slice.start is not None and slice_.start <= other_slice.start)
+        )
+
+        stop_covered = (
+            slice_.stop is None
+            or (other_slice.stop is not None and slice_.stop >= other_slice.stop)
+        )
+
+        if not (start_covered and stop_covered):
+            return False
+
+    return True
+
+
+def change_origin(slicing, other):
+    # precondition: covers(slicing, other)
+    result = []
+    for slice_, other_slice in zip(slicing, other):
+        start, stop = None, None
+        origin_start = slice_.start or 0
+
+        if other_slice.start is not None:
+            start = other_slice.start - origin_start
+
+        if other_slice.stop is not None:
+            stop = other_slice.stop - origin_start
+
+        result.append(slice(start, stop))
+
+    # postcondition: arr[slicing][result] == arr[other]
+    return tuple(result)
+
+
+cache_req_count = 0
+cache_req_miss = 0
+
+class CachedSource(QObject):
+    """
+    Decorator data source provides cachable requests to underlying sources
+    """
+    isDirty = pyqtSignal(object)
+    numberOfChannelsChanged = pyqtSignal(int)
+
+    @property
+    def numberOfChannels(self):
+        return self._orig_src.numberOfChannels
+
+    def setDirty(self, slicing):
+        pass
+
+    def __eq__(self, other):
+        return False
+
+    def __ne__(self, other):
+        return True
+
+    def clean_up(self):
+        pass
+
+    class _Cache:
+        def __init__(self):
+            self._cache = []
+
+        def put(self, key, value):
+            self._cache.append((key, value))
+
+        def __iter__(self):
+            return iter(self._cache)
+
+    class _CacheRequest:
+        def __init__(self, cache, slicing, request_func):
+            self._slicing = slicing
+            self._cache = cache
+            self._request_func = request_func
+            global cache_req_count
+            cache_req_count += 1
+            print(f"Cach req count: {cache_req_count}")
+
+        def wait(self):
+            for key, entry in self._cache:
+                if covers(key, self._slicing):
+                    subslice = change_origin(key, self._slicing)
+                    print('cache request hit', self._slicing)
+                    return entry[subslice]
+
+            result = self._request_func(self._slicing).wait()
+            global cache_req_miss
+            cache_req_miss += 1
+            print('cache request miss', self._slicing)
+            self._cache.put(self._slicing, result)
+            return result
+
+    def __init__(self, orig):
+        self._orig_src = orig
+        self._cache = self._Cache()
+        super().__init__(parent=None)
+
+    def dtype(self):
+        return self._orig_src.dtype()
+
+    def request(self, slicing):
+        return self._CacheRequest(self._cache, slicing, self._orig_src.request)
+
+
+class LazyflowSource(CachedSource):
+    def __init__(self, slot):
+        super().__init__(None)
+        self._orig_src = _LazyflowSource(slot)

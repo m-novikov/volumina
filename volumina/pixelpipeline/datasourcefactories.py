@@ -28,7 +28,7 @@ import numpy
 hasLazyflow = True
 try:
     import lazyflow
-    from .datasources import LazyflowSource
+    from .datasources import _LazyflowSource, CachedSource
 except ImportError:
     hasLazyflow = False
 
@@ -51,8 +51,9 @@ if hasLazyflow:
 
     def _createDataSourceLazyflow(slot, withShape):
         # has to handle Lazyflow source
-        src = LazyflowSource(slot)
+        src = _LazyflowSource(slot)
         shape = src._op5.Output.meta.shape
+        src = CachedSource(src)
         if withShape:
             return src, shape
         else:

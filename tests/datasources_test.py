@@ -130,19 +130,82 @@ class RelabelingArraySourceTest(ut.TestCase, GenericArraySourceTest):
 
 class CachedSource:
     """
-    Decorator data source provides cachable requests to underlying src
+    Decorator data source provides cachable requests to underlying sources
     """
+    class _Cache:
+        def __init__(self):
+            self._cache = []
+
+        def put(self, key, value):
+            self._cache.append((key, value))
+
+        def __iter__(self):
+            return iter(self._cache)
+
+    class _CacheRequest:
+        def __init__(self, cache, slicing, request_func):
+            self._slicing = slicing
+            self._cache = cache
+            self._request_func = request_func
+
+        def wait(self):
+            for key, entry in self._cache:
+                if covers(key, self._slicing):
+                    subslice = change_origin(key, self._slicing)
+                    return entry[subslice]
+
+            result = self._request_func(self._slicing).wait()
+            self._cache.put(self._slicing, result)
+            return result
+
     def __init__(self, orig):
-        self._orig = orig
-        self._cache = {}
+        self._orig_src = orig
+        self._cache = self._Cache()
 
     def dtype(self):
-        return self._orig.dtype()
+        return self._orig_src.dtype()
 
     def request(self, slicing):
-        if slicing not in self._cache:
-            self._cache[slicing] = self._orig.request(slicing)
-        return self._cache[slicing]
+        return self._CacheRequest(self._cache, slicing, self._orig_src.request)
+
+
+def covers(slicing, other):
+    assert len(slicing) == len(other)
+
+    for slice_, other_slice in zip(slicing, other):
+        start_covered = (
+            slice_.start is None
+            or (other_slice.start is not None and slice_.start <= other_slice.start)
+        )
+
+        stop_covered = (
+            slice_.stop is None
+            or (other_slice.stop is not None and slice_.stop >= other_slice.stop)
+        )
+
+        if not (start_covered and stop_covered):
+            return False
+
+    return True
+
+
+def change_origin(slicing, other):
+    # precondition: covers(slicing, other)
+    result = []
+    for slice_, other_slice in zip(slicing, other):
+        start, stop = None, None
+        origin_start = slice_.start or 0
+
+        if other_slice.start is not None:
+            start = other_slice.start - origin_start
+
+        if other_slice.stop is not None:
+            stop = other_slice.stop - origin_start
+
+        result.append(slice(start, stop))
+
+    # postcondition: arr[slicing][result] == arr[other]
+    return tuple(result)
 
 
 class TestCachedImageSource:
@@ -164,7 +227,7 @@ class TestCachedImageSource:
 
     def test_request_slicing(self, src, orig_src):
         slicing = sl[:, :, :, :, :]
-        src.request(slicing)
+        src.request(slicing).wait()
         orig_src.request.assert_called_once_with(slicing)
 
     def test_consecutive_requests_with_same_shape_are_cached(self, src, orig_src, data):
@@ -195,13 +258,23 @@ class TestCachedImageSource:
         [sl[0:100, 0:100], sl[0:40, 0:40], True],
         [sl[0:40, 0:40], sl[0:100, 0:100], False],
         [sl[1:40, 1:40], sl[0:40, 0:40], False],
+        [sl[1:40, 1:40], sl[5:20, 38:45], False],
+        [sl[1:40, 1:40], sl[0:5, 5:20], False],
         [sl[1:40, 1:40], sl[1:39, 1:40], True],
+        [sl[:40, :40], sl[:39, :40], True],
+        [sl[:40, :40], sl[0:39, 0:40], True],
+        [sl[:40, :40], sl[:41, :40], False],
     ])
     def test_covers(self, slice1, slice2, result):
-        def covers(slicing, other):
-            assert len(slicing) == len(other)
-            for slice_, other_slice in zip(slicing, other):
-                if slice_.stop < other_slice.stop or slice_.start > other_slice.start:
-                    return False
-            return True
         assert covers(slice1, slice2) == result
+
+    @pytest.mark.parametrize('slice1,slice2,result', [
+        [sl[20:30, 40:50], sl[25:27, 42:44], sl[5:7, 2:4]],
+        [sl[:30, :50], sl[25:27, 42:44], sl[25:27, 42:44]],
+        [sl[:30, :50], sl[:27, :44], sl[:27, :44]],
+    ])
+    def test_change_origin(self, slice1, slice2, result):
+        # Given two slices one of which is subslice of another
+        # Compute slice that can be used to retrive result from parent slice (adjust origin point)
+        subslice = change_origin(slice1, slice2)
+        assert subslice == result
