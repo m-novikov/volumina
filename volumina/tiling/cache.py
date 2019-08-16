@@ -1,6 +1,7 @@
 import threading
 import warnings
 import logging
+import signal
 from collections import OrderedDict, defaultdict
 
 import numpy
@@ -77,6 +78,9 @@ class MultiCache:
     def __iter__(self):
         return iter(self._caches)
 
+    def values(self):
+        return self._caches.values()
+
     def __len__(self):
         return len(self._caches)
 
@@ -120,6 +124,7 @@ class TilesCache:
         self._sims = sims
         self._maxstacks = maxstacks
         self._policy = CachePolicy(maxstacks)
+        signal.signal(signal.SIGUSR1, self._report)
 
         kwargs = {"first_uid": first_stack_id, "policy": self._policy}
 
@@ -137,6 +142,34 @@ class TilesCache:
 
         # [stack_id][(ims, tile_id)] -> float
         self._layerCacheTimestamp = MultiCache(default_factory=float, **kwargs)
+
+    def _report(self, *args, **kwargs):
+        print("==========MEMORY_USAGE============")
+        import gc
+        from collections import Counter
+
+        caches = [self._tileCache, self._layerCache]
+        for cache in caches:
+            total = 0
+            for stack_entries in cache.values():
+                for entry in stack_entries.values():
+                    if isinstance(entry, tuple):
+                        entry = entry[0]
+                        total += entry.byteCount()
+                    else:
+                        total += entry.byteCount()
+            print(f"{cache} size: {total / (1024 ** 2)}mb")
+        gc.collect()
+        c = Counter(type(o) for o in gc.get_objects())
+        print(c.most_common(20))
+
+        with open("/tmp/out.txt", "w+") as out:
+            for obj in gc.get_objects():
+                if "QueueObject" in str(type(obj)):
+                    for ref in gc.get_referrers(obj):
+                        out.write("REF " + str(ref).replace("\n", " ") + "\n")
+
+        # gc.set_debug(gc.DEBUG_LEAK)
 
     @property
     def maxstacks(self):

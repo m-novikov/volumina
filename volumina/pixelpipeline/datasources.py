@@ -32,8 +32,8 @@ from .asyncabcs import RequestABC, SourceABC, IndeterminateRequestError
 import volumina
 from volumina.slicingtools import is_pure_slicing, slicing2shape, is_bounded, make_bounded, index2slice, sl
 from volumina.config import CONFIG
+from volumina.cache import KVCache
 import numpy as np
-from future.utils import raise_with_traceback
 
 _has_lazyflow = True
 try:
@@ -54,6 +54,24 @@ logger = logging.getLogger(__name__)
 # *******************************************************************************
 # A r r a y R e q u e s t                                                      *
 # *******************************************************************************
+
+_cache = KVCache()
+_cache.register_type(np.ndarray, lambda obj: sys.getsizeof(obj))
+import signal
+
+
+def report_memory(*args, **kw):
+    print("MEMORY REPORT", _cache)
+    print(f"Number of entries: {len(_cache)}")
+    print(f"Used: {_cache.used_memory / (1024 ** 2)}mb")
+    _cache.clean()
+    print("CLEAN")
+    print(f"Used: {_cache.used_memory / (1024 ** 2)}mb")
+    for k in _cache.keys():
+        print("KEY", k)
+
+
+signal.signal(signal.SIGUSR2, report_memory)
 
 
 class ArrayRequest(object):
@@ -370,6 +388,10 @@ if _has_lazyflow:
         def __ne__(self, other):
             return not (self == other)
 
+        def __repr__(self):
+            type_name = type(self).__name__
+            return f"<{type_name}({self._orig_outslot})>"
+
         def __hash__(self):
             return hash((self._orig_meta, self._orig_outslot))
 
@@ -421,27 +443,26 @@ class CachableSource(QObject):
     numberOfChannelsChanged = pyqtSignal(int)
 
     class _Request:
-        def __init__(self, cache, slicing, key):
-            self._cache = cache
+        def __init__(self, cached_source, slicing, key):
+            self._cached_source = cached_source
             self._slicing = slicing
             self._key = key
             self._result = None
-            self._rq = self._cache._source.request(self._slicing)
+            self._rq = self._cached_source._source.request(self._slicing)
 
         def wait(self):
             self._result = res = self._rq.wait()
-            self._cache._cache[self._key] = res
+            self._cached_source._cache.set(self._key, res)
+            pop = self._cached_source._req.pop(self._key, None)
             return res
 
         def getResult(self):
             return self._result
 
         def cancel(self):
-            print("SUBMIT")
             self._rq.cancel()
 
         def submit(self):
-            print("SUBMIT")
             self._rq.submit()
 
     class _CachedRequest:
@@ -464,24 +485,32 @@ class CachableSource(QObject):
         super().__init__()
         self._source = source
         self._lock = threading.Lock()
-        self._cache = {}
+        global _cache
+        self._prefix = f"{id(self)}:{self}"
+        self._cache = _cache
         self._req = {}
+        self._source.isDirty.connect(self.onDirty)
+        self._source.isDirty.connect(self.isDirty)
+
+    def onDirty(self, *args):
+        self._cache.delete_prefix(self._prefix)
+        self._req.clear()
 
     def cache_key(self, slicing):
-        parts = []
+        parts = [self._prefix]
 
         for el in slicing:
             _, key_part = el.__reduce__()
             parts.append(key_part)
 
-        return tuple(parts)
+        return "|".join(str(p) for p in parts)
 
     def request(self, slicing):
         key = self.cache_key(slicing)
 
         with self._lock:
             if key in self._cache:
-                return self._CachedRequest(self._cache[key])
+                return self._CachedRequest(self._cache.get(key))
 
             else:
                 if key not in self._req:
@@ -496,6 +525,9 @@ class CachableSource(QObject):
         if not is_pure_slicing(slicing):
             raise Exception("dirty region: slicing is not pure")
         self.isDirty.emit(slicing)
+
+    def __repr__(self):
+        return f"<CachedSource({self._source})>"
 
     def __eq__(self, other):
         if other is None:

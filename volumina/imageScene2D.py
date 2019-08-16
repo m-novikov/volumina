@@ -24,6 +24,7 @@ from __future__ import division
 from builtins import range
 from past.utils import old_div
 import numpy, math
+import time
 
 from PyQt5.QtCore import QRect, QRectF, QPointF, Qt, QSizeF, QLineF, QObject, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
@@ -469,6 +470,7 @@ class ImageScene2D(QGraphicsScene):
         if self._tileProvider is None:
             return
 
+        t1 = time.time()
         # FIXME: For some strange reason, drawBackground is called with
         #        a much larger sceneRectF than necessasry sometimes.
         #        This can happen after panSlicingViews(), for instance.
@@ -476,13 +478,15 @@ class ImageScene2D(QGraphicsScene):
         #        it needs to draw immediately after the ImageView's scrollbar is panned.
         #        As a workaround, we manually check the amount of the scene that needs to be drawn,
         #        instead of relying on the above sceneRectF parameter to be correct.
+        print("draw bg", sceneRectF)
         if self.views():
-            sceneRectF = self.views()[0].viewportRect().intersected(sceneRectF)
+            viewportRect = self.views()[0].viewportRect()
+            sceneRectF = viewportRect.intersected(sceneRectF)
 
         if not sceneRectF.isValid():
             return
 
-        tiles = self._tileProvider.getTiles(sceneRectF)
+        tiles = self._tileProvider.getTiles(sceneRectF, center=viewportRect.center())
         allComplete = True
         for tile in tiles:
             # We always draw the tile, even though it might not be up-to-date
@@ -524,6 +528,7 @@ class ImageScene2D(QGraphicsScene):
             upcoming_through_slices = self._bowWave(self._n_preemptive)
             for through in upcoming_through_slices:
                 self._tileProvider.prefetch(sceneRectF, through, layer_indexes=None)
+        print("draw bg", sceneRectF, "TOOK", time.time() - t1)
 
     def triggerPrefetch(self, layer_indexes, time_range="current", spatial_axis_range="current", sceneRectF=None):
         """

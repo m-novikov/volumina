@@ -25,7 +25,9 @@ from __future__ import division
 # Python
 from builtins import range
 import sys
+import signal
 import time
+import math
 import collections
 import threading
 from collections import defaultdict, OrderedDict
@@ -36,8 +38,9 @@ import warnings
 # SciPy
 import numpy
 
+
 # PyQt
-from PyQt5.QtCore import QRect, QRectF, QMutex, QObject, pyqtSignal
+from PyQt5.QtCore import QRect, QRectF, QMutex, QObject, pyqtSignal, QTimer, QThread
 from PyQt5.QtWidgets import QGraphicsItem
 from PyQt5.QtGui import QImage, QPainter, QTransform
 
@@ -70,6 +73,7 @@ def submit_to_threadpool(fn, priority):
         root_priority = [1] + list(priority)
         req = Request(fn, root_priority)
         req.submit()
+        return req
     else:
         get_render_pool().submit(fn, priority)
 
@@ -215,6 +219,17 @@ class Tiling(object):
         return len(self.imageRectFs)
 
 
+class AThread(QThread):
+    def __init__(self, target):
+        self._target = target
+        super().__init__(None)
+
+    def run(self):
+        print("RUNNING", self._target)
+        self._target()
+        print("DONE", self._target)
+
+
 class TileProvider(QObject):
     """
     Note: Throughout this class, the terms 'layer', 'ImageSource', and 'ims' are used interchangeably.
@@ -260,6 +275,11 @@ class TileProvider(QObject):
 
         self._current_stack_id = self._sims.stackId
         self._cache = TilesCache(self._current_stack_id, self._sims, maxstacks=cache_size)
+        self._requests = {}
+        self._aggregated = []
+        self._timer = QTimer()
+        self._timer.timeout.connect(self.emit_invalidate)
+        self._timer.start(1000)
 
         self._sims.layerDirty.connect(self._onLayerDirty)
         self._sims.visibleChanged.connect(self._onVisibleChanged)
@@ -267,6 +287,7 @@ class TileProvider(QObject):
         self._sims.sizeChanged.connect(self._onSizeChanged)
         self._sims.orderChanged.connect(self._onOrderChanged)
         self._sims.stackIdChanged.connect(self._onStackIdChanged)
+        self._threads = []
 
     @property
     def cache_size(self):
@@ -275,7 +296,7 @@ class TileProvider(QObject):
     def set_cache_size(self, new_size):
         self._cache.set_maxstacks(new_size)
 
-    def getTiles(self, rectF):
+    def getTiles(self, rectF, center=None):
         """Get tiles in rect and request a refresh.
 
         Returns tiles intersecting with rectF immediately and requests
@@ -284,7 +305,7 @@ class TileProvider(QObject):
         until the rendering is fully complete, call join().
 
         """
-        self.requestRefresh(rectF)
+        self.requestRefresh(rectF, center=center)
         tile_nos = self.tiling.intersected(rectF)
         stack_id = self._current_stack_id
 
@@ -299,14 +320,19 @@ class TileProvider(QObject):
         This function is for testing purposes only.
         Block until all tiles intersecting the given rect are complete.
         """
+        import time
+
+        t1 = time.time()
+        print("WAIT FOR TILES")
         finished = False
         while not finished:
             finished = True
             tiles = self.getTiles(rectF)
             for tile in tiles:
                 finished &= tile.progress >= 1.0
+        print("WAIT FOR TILES DONE", time.time() - t1)
 
-    def requestRefresh(self, rectF, stack_id=None, prefetch=False, layer_indexes=None):
+    def requestRefresh(self, rectF, stack_id=None, prefetch=False, layer_indexes=None, center=None):
         """Requests tiles to be refreshed.
 
         Returns immediately. Call join() to wait for
@@ -316,7 +342,7 @@ class TileProvider(QObject):
         stack_id = stack_id or self._current_stack_id
         tile_nos = self.tiling.intersected(rectF)
         for tile_no in tile_nos:
-            self._refreshTile(stack_id, tile_no, prefetch, layer_indexes)
+            self._refreshTile(stack_id, tile_no, prefetch, layer_indexes, center=center)
 
     def prefetch(self, rectF, through, layer_indexes=None):
         """Request fetching of tiles in advance.
@@ -339,7 +365,7 @@ class TileProvider(QObject):
 
         self.requestRefresh(rectF, stack_id, prefetch=True, layer_indexes=layer_indexes)
 
-    def _refreshTile(self, stack_id, tile_no, prefetch=False, layer_indexes=None):
+    def _refreshTile(self, stack_id, tile_no, prefetch=False, layer_indexes=None, center=None):
         """
         Trigger a refresh of a particular tile.
 
@@ -383,6 +409,8 @@ class TileProvider(QObject):
 
                 # Blend all (available) layers into the composite tile
                 # and store it in the tile cache.
+                import time
+
                 tile_img = self._blendTile(stack_id, tile_no)
                 with self._cache:
                     self._cache.setTile(
@@ -391,6 +419,9 @@ class TileProvider(QObject):
 
             # refresh dirty layer tiles
             need_reblend = False
+            timestamp = time.time()
+            scheduled = []
+
             for ims in layers:
                 with self._cache:
                     layer_dirty = self._cache.layerTileDirty(stack_id, ims, tile_no)
@@ -401,9 +432,14 @@ class TileProvider(QObject):
 
                 rect = self.tiling.imageRects[tile_no]
                 dataRect = self.tiling.scene2data.mapRect(rect)
+                dataCenter = dataRect.center()
+                distance = math.sqrt((dataCenter.x() - center.x()) ** 2 + (dataCenter.y() - center.y()) ** 2)
+
+                print("DATA CENTER", dataCenter, "DISTANCE", distance)
 
                 try:
                     # Create the request object right now, from the main thread.
+
                     ims_req = ims.request(dataRect, stack_id[1])
                 except IndeterminateRequestError:
                     # In ilastik, the viewer is still churning even as the user might be changing settings in the UI.
@@ -413,7 +449,6 @@ class TileProvider(QObject):
                     sys.excepthook(*sys.exc_info())
                     continue
 
-                timestamp = time.time()
                 fetch_fn = partial(
                     self._fetch_layer_tile, timestamp, ims, transform, tile_no, stack_id, ims_req, self._cache
                 )
@@ -425,11 +460,19 @@ class TileProvider(QObject):
                     fetch_fn()
                     need_reblend = True
                 else:
+                    # self._scheduled = []
                     # Tasks with 'smaller' priority values are processed first.
                     # We want non-prefetch tasks to take priority (False < True)
                     # and then more recent tasks to take priority (more recent -> process first)
-                    priority = (prefetch, -timestamp)
-                    submit_to_threadpool(fetch_fn, priority)
+                    priority = (prefetch, distance)
+                    print("PRIORITY", priority)
+                    old_req = self._requests.pop((stack_id, ims, tile_no), None)
+
+                    if old_req is not None:
+                        print("CANCEL")
+                        old_req.cancel()
+
+                    self._requests[(stack_id, ims, tile_no)] = submit_to_threadpool(fetch_fn, priority)
 
             if need_reblend:
                 # We synchronously fetched at least one direct layer.
@@ -497,6 +540,28 @@ class TileProvider(QObject):
 
         return qimg
 
+    def invalidate(self, rect):
+        self._aggregated.append(rect)
+
+    def emit_invalidate(self):
+        if not self._aggregated:
+            return
+
+        print("EMIT INVALIDATE")
+        aggregated, self._aggregated = self._aggregated, []
+
+        res = None
+
+        for rect in aggregated:
+            if res is None:
+                res = rect
+            else:
+                res = res.united(rect)
+
+        print("INVALIDATE", res, res.isValid())
+
+        self.sceneRectChanged.emit(res)
+
     def _fetch_layer_tile(self, timestamp, ims, transform, tile_nr, stack_id, ims_req, cache):
         """
         Fetch a single tile from a layer (ImageSource).
@@ -531,7 +596,13 @@ class TileProvider(QObject):
             tile_rect = QRectF(self.tiling.imageRects[tile_nr])
 
             if timestamp > layerTimestamp:
-                img = ims_req.wait()
+                try:
+                    self._requests.pop((stack_id, ims, tile_nr), None)
+                    img = ims_req.wait()
+                except Exception as e:
+                    print("EXCEPTION", e, type(e))
+                    return
+
                 if isinstance(img, QImage):
                     img = img.transformed(transform)
                 elif isinstance(img, QGraphicsItem):
@@ -551,9 +622,12 @@ class TileProvider(QObject):
                         pass
 
                 if stack_id == self._current_stack_id and cache is self._cache:
+                    # self.invalidate(tile_rect)
                     self.sceneRectChanged.emit(tile_rect)
         except BaseException:
             sys.excepthook(*sys.exc_info())
+        finally:
+            self._requests.pop((stack_id, ims, tile_nr), None)
 
     def _onLayerDirty(self, dirtyImgSrc, dataRect):
         """
